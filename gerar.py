@@ -1,11 +1,16 @@
-"""Gera o card estilo neofetch do README do perfil: avatar em ASCII colorido + info."""
+"""Gera o card estilo neofetch do README do perfil: avatar em ASCII colorido + info.
+
+Entrada: avatar-sem-fundo.png (avatar com o fundo removido pelo rembg).
+Saida: neofetch-dark.svg e neofetch-light.svg.
+"""
 import colorsys
 from html import escape
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageOps
 
-COLS, ROWS = 52, 26          # fonte monoespacada tem ~2:1 de altura/largura
-RAMP = " .:-=+*#%@"          # do mais vazio ao mais denso
-FS, CW, LH = 14, 8.4, 17     # tamanho da fonte, largura do char, altura da linha
+COLS, ROWS = 64, 38          # 64 colunas: com 52 o rosto virava mancha
+RAMP = " .:-=+*#%@"          # vazio -> denso; escala com letras virava "sopa de texto"
+FS, CW, LH = 14, 8.4, 17     # texto da direita: fonte, largura do char, altura da linha
+AFS, ACW, ALH = 12, 7.2, 14  # arte: fonte menor para caber mais resolucao
 
 INFO = [
     ("title", "pedroivobr@github"),
@@ -41,28 +46,39 @@ THEMES = {
 PALETTE = ["#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3", "#6e7681"]
 
 
-def ascii_rows(path, v_min, v_max):
-    img = Image.open(path).convert("RGB")
+def ascii_rows(path, v_min, v_max, dark):
+    """Converte o avatar em linhas de (caractere, cor).
+
+    O fundo vem removido no canal alfa: a parede clara dominava o desenho e o
+    rosto sumia. Fora da pessoa, o caractere e' espaco.
+    """
+    img = Image.open(path).convert("RGBA")
     w, h = img.size
-    img = img.crop((int(w * 0.04), 0, int(w * 0.89), h))  # corta a TV da direita
-    img = ImageEnhance.Contrast(img).enhance(1.3)
+    img = img.crop((int(w * 0.08), 0, int(w * 0.92), h))
     small = img.resize((COLS, ROWS), Image.LANCZOS)
+    rgb, alpha = small.convert("RGB"), small.getchannel("A")
+    mask = alpha.point(lambda a: 255 if a > 128 else 0)
+    # equaliza so' a luminancia da pessoa: o rosto ocupa uma faixa estreita de
+    # tons e, sem isso, olhos, barba e oculos viram o mesmo caractere
+    lum = ImageOps.equalize(rgb.convert("L"), mask=mask)
     rows = []
     for y in range(ROWS):
         row = []
         for x in range(COLS):
-            r, g, b = small.getpixel((x, y))
-            lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-            # a parede do fundo e' clara: acima de ~0.68 vira espaco, senao o fundo
-            # domina e o rosto some
-            d = min(1.0, max(0.0, (0.68 - lum) / 0.55))
-            ch = RAMP[min(len(RAMP) - 1, int(d * len(RAMP)))]
+            if not mask.getpixel((x, y)):
+                row.append((" ", None))
+                continue
+            l = lum.getpixel((x, y)) / 255
+            # no fundo escuro, claro = denso (a pele acende, barba e oculos recuam)
+            d = l if dark else 1 - l
+            ch = RAMP[1 + min(len(RAMP) - 2, int(d * (len(RAMP) - 1)))]
             # mantem matiz e saturacao, mas prende o brilho numa faixa legivel no
             # fundo do tema (o chapeu azul-escuro sumia no fundo escuro)
-            h, s_, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
-            v = v_min + (v_max - v_min) * v
-            s_ = min(1.0, s_ * 1.3)
-            rr, gg, bb = (int(c * 255) // 16 * 16 for c in colorsys.hsv_to_rgb(h, s_, v))
+            r, g, b = rgb.getpixel((x, y))
+            hh, ss, vv = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            vv = v_min + (v_max - v_min) * vv
+            ss = min(1.0, ss * 1.3)
+            rr, gg, bb = (int(c * 255) // 16 * 16 for c in colorsys.hsv_to_rgb(hh, ss, vv))
             row.append((ch, "#%02x%02x%02x" % (rr, gg, bb)))
         rows.append(row)
     return rows
@@ -72,27 +88,27 @@ def svg(theme):
     t = THEMES[theme]
     dark = theme == "dark"
     pad = 24
-    art_w = COLS * CW
+    art_w = COLS * ACW
     info_x = pad + art_w + 28
-    h = pad * 2 + ROWS * LH
+    h = pad * 2 + ROWS * ALH
     w = info_x + 40 * CW + pad
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h}" '
            f'viewBox="0 0 {w:.0f} {h}" font-family="ui-monospace,SFMono-Regular,Consolas,'
            f'Liberation Mono,Menlo,monospace" font-size="{FS}">',
            f'<rect width="100%" height="100%" rx="10" fill="{t["bg"]}" stroke="{t["border"]}"/>']
 
-    for i, row in enumerate(ascii_rows("avatar.jpg", t["v_min"], t["v_max"])):
-        y = pad + (i + 1) * LH - 4
+    for i, row in enumerate(ascii_rows("avatar-sem-fundo.png", t["v_min"], t["v_max"], dark)):
+        y = pad + (i + 1) * ALH - 3
         spans, cur, buf = [], None, ""
-        for ch, cor in row + [("", None)]:
+        for ch, cor in row + [("", "fim")]:
             if cor != cur and buf:
-                spans.append(f'<tspan fill="{cur}">{escape(buf)}</tspan>')
+                spans.append(escape(buf) if cur is None else f'<tspan fill="{cur}">{escape(buf)}</tspan>')
                 buf = ""
             cur, buf = cor, buf + ch
-        out.append(f'<text x="{pad}" y="{y}" xml:space="preserve" '
+        out.append(f'<text x="{pad}" y="{y}" xml:space="preserve" font-size="{AFS}" '
                    f'textLength="{art_w:.0f}" lengthAdjust="spacing">{"".join(spans)}</text>')
 
-    y0 = pad + ((ROWS - len(INFO)) // 2) * LH
+    y0 = pad + (h - 2 * pad - len(INFO) * LH) // 2
     for i, item in enumerate(INFO):
         y = y0 + (i + 1) * LH - 4
         kind = item[0]
